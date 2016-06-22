@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 
+(StandardBuild.Proj)
+
+Purpose:  
+  This is a standard Generic build file that is used in both Local builds and TFS builds.
+  This project build file uses the following required parameters
+  
+  SoluitonName: Just the solution name, do not have file ext such as .sln  
+    Example to build the GeoLynxServicesAPI.sln
+    "GeoLynxServicesAPI"
+
+  TFSTeamProjectName: TFS Team Project name for where the solution lives in TFS.
+    Example:
+         "GeoLynxPlatformGen5" 
+  
+History:
+  DVD - 12-1-2015 - New 
+  DVD - 12-7-2015 - Clean up, added copy of Ent Lib Config tools.
+  DVD - 12-9-2015 - Adding some error checking for some targets so build fails when it should.
+  DVD - 1-6-2015    Ready for first deployment.  
+ 
+-->
+<Project ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Validation; InfoMessages; Build;CopyEntLibConfigFiles;UnitTests">
+
+	<!--Setting properties --> 
+	<!--  Condition: property values are not changed if they already have a value. -->
+	<PropertyGroup>
+      <OutDir Condition="'$(OutDir)' == ''">$(MSBuildProjectDirectory)\build\</OutDir>
+	    <DisableTraceLogClean Condition="'$(DisableTraceLogClean)' == ''">False</DisableTraceLogClean>
+	    <TraceLogMax Condition="'$(TraceLogMax)' == ''">50</TraceLogMax>
+	    <SourceHome Condition=" '$(SourceHome)'=='' ">.</SourceHome>
+	    <ToolsHome Condition=" '$(ToolsHome)'=='' ">.\BuildTools</ToolsHome>
+		
+		  <!-- Needed for Web Publishing Pipeline -->
+		  <UseWPP_CopyWebApplication>True</UseWPP_CopyWebApplication>
+      <PipelineDependsOnBuild>False</PipelineDependsOnBuild>
+    
+	    <SolutionFileName>.\$(SolutionName).sln</SolutionFileName>
+      <NugetDropFolder>$(OutDir.TrimEnd('\'))\$(NugetFolder.TrimStart('\'))</NugetDropFolder>
+  </PropertyGroup>
+
+
+  <!--Setup TfsArgs for local or TFS build. -->
+	<Choose>
+		<When Condition="'$(TeamFoundationServerUrl)' != '' And '$(BuildUri)' != ''">
+			<PropertyGroup>
+				<TfsArgs>-TfsUrl $(TeamFoundationServerUrl) -BuildUri $(BuildUri) -BuildName "$(TF_BUILD_BUILDNUMBER)" -TeamProject $(TFSTeamProjectName) -Platform "Any CPU" -Flavor Release</TfsArgs>
+			</PropertyGroup>
+		</When>
+		<Otherwise>
+			<PropertyGroup>
+				<TfsArgs></TfsArgs>
+			</PropertyGroup>
+		</Otherwise>
+	</Choose>
+
+
+  <!--Validate what we can such as making sure input parameters that are required have been passed in.-->
+  <Target Name="Validation">
+    <Error Text = "BUILD ERROR(StandardBuild.proj): Required parameter 'SolutionName' is empty or missing."
+           Condition="'$(SolutionName)' == ''"  />
+
+    <Error Text = "BUILD ERROR(StandardBuild.proj): Required parameter 'TFSTeamProjectName' is empty or missing."
+           Condition="'$(TFSTeamProjectName)' == ''"  />
+  </Target>
+
+  <!--Display info messages -->
+  <Target Name="InfoMessages">
+    <Message Text = "TFSTeamProjectName: $(TFSTeamProjectName)" /> 
+    <Message Text = "TfsArgs: '$(TfsArgs)'"/>
+	  <Message Text = "WebProjectOutputDir: '$(WebProjectOutputDir)'" />
+    <Message Text = "SolutionFileName: [$(SolutionFileName)]" />
+  </Target>
+
+  <!--Target: Prepare -->
+  <!-- Delete the existing outdir to make sure we start with an empty folder.-->
+  <Target Name="Prepare">
+    <Message Text="Starting Prepare; $([System.DateTime]::Now.ToLongTimeString())" />
+
+    <RemoveDir Directories="$(OutDir)"/>
+
+    <Message Text="Finished Prepare; $([System.DateTime]::Now.ToLongTimeString())" />
+  </Target>
+
+  <!--Target: Restore Nuget Packages-->
+  <Target Name="RestorePackages">
+    <Message Text="Starting RestorePackages; $([System.DateTime]::Now.ToLongTimeString())" />
+
+    <Exec Command="NuGet.exe restore $(SolutionFileName)" />
+    
+    <Message Text="finish RestorePackages; $([System.DateTime]::Now.ToLongTimeString())" />
+  </Target>
+  
+  <!-- Target: Build -->
+  <!-- This target builds the solution.-->
+	<Target Name="Build" DependsOnTargets="Prepare;RestorePackages" >
+		<Message Text="Starting Build; $([System.DateTime]::Now.ToLongTimeString())" />
+    <Message Text="Projects=$(SolutionFileName)"/>
+    
+		<MSBuild Projects="$(SolutionFileName)" 
+             Properties="Configuration=$(Configuration);Platform=Any CPU;OutDir=$(OutDir)" 
+             Targets="Build">
+        </MSBuild>
+    
+		<Message Text="Build Completed; $([System.DateTime]::Now.ToLongTimeString())" />
+	</Target>
+	
+  <!--Target: CopyEntLibConfigFiles-->
+  <!--This target will copy Enterprise Lib config tool files to the bin of the published websites folder. -->
+  <!--This is dependent on the 'Tools\EnterpriseLibrary.Config' folder being fetched from TFS defined in the build definition.-->
+  <!--If files can not be found the build will fail and be considered a unSuccessful build.-->
+  <!--Condition: Only Execute this target is parameter CopyEntLibConfigTools != false. -->
+  <!--           Local builds don't copy these files while TFS builds need to. -->
+  <Target Name="CopyEntLibConfigFiles" DependsOnTargets="Build" Condition="'$(CopyEntLibConfigTools)' != 'false'">
+    <Message Text="Starting CopyEntLibConfigFiles; $([System.DateTime]::Now.ToLongTimeString())" />
+
+    <!--Create the group of files for the Ent Lib Config tool. -->
+    <ItemGroup>
+      <EntLibConfigToolsFiles Include="..\Tools\EnterpriseLibrary.Config\**\*.*"/>
+    </ItemGroup>
+
+    <Message Text ="Files to copy: $(EntLibConfigToolsFiles)"/>
+    <Message Text ="Enterprise Config Tools Destination $(OutDir)_PublishedWebsites\$(SolutionName)\bin"/>
+
+    <!--Log error message if no files are found to be copied. -->
+    <Message Text ="There are no files to copy and there should be, check source in build definition." Condition="'@(EntLibConfigToolsFiles)' == ''"/>
+    
+    <!-- Fail build if there are not files to copy.  More than likely caused by a build definition error for source files. -->
+    <Error Condition="'@(EntLibConfigToolsFiles)' == ''" 
+           Text ="BUILD ERROR: Did not find any of the Enterprise Library config tool files to copy."/>
+
+    <!-- Copy the files to the published web site folder... -->
+    <Copy SourceFiles="@(EntLibConfigToolsFiles)"    
+          DestinationFolder ="$(OutDir)\_PublishedWebsites\$(SolutionName)\bin" 
+          ContinueOnError ="true"/> 
+
+    <Message Text="CopyEntLibConfigFiles Completed; $([System.DateTime]::Now.ToLongTimeString())" />
+  </Target>
+	
+  <!--Target: UnitTests-->
+  <!-- Run Unit test script -->
+	<Target Name="UnitTests"> 
+		<Message Text="Starting Test; $([System.DateTime]::Now.ToLongTimeString())" />
+  
+    <!--Run the test script and pass out ErrorCode-->
+    <!--Ignore Exit code since it gives a confusion error. -->
+    <Exec ContinueOnError="ErrorAndContinue"      
+          IgnoreExitCode="true"
+          Command="powershell.exe -ExecutionPolicy ByPass -Noninteractive -NoLogo -WindowStyle Hidden -NoProfile -File $(MSBuildProjectDirectory)\StandardBuildUnitTests.ps1 -BinDir $(OutDir) -TestOutput TestResults $(TfsArgs)">
+        <Output TaskParameter="ExitCode" PropertyName="ErrorCode"/>
+		</Exec>
+
+    <Message Text="Target:Unit tests - ErrorCode value= $(ErrorCode)" />
+    <!-- Report a more friendly error message than <Exec> if $(ErrorCode) == 1 -->
+    <!-- Note <Exec> has IgnoreExitCode set to true so that it does not report an error.    -->
+    <Error Text = "BUILD ERROR: Unit Test(s) Failed!!!: One or more Unit Test(s) failed.  See test section of report for more details."  
+           Condition="'$(ErrorCode)' == '1'"  />
+    
+    <Message Text="Test completed.  Exit code is [$(ErrorCode)]; $([System.DateTime]::Now.ToLongTimeString())" />
+	</Target>
+
+	<Target Name="GitLink" DependsOnTargets="Build" >
+		<Message Text="Starting GitLink; $([System.DateTime]::Now.ToLongTimeString())" />
+
+	  <CreateItem Include="$(MSBuildProjectDirectory)\..\">
+		<Output ItemName="MSBuildProjectParentDirectory" TaskParameter="Include"/>
+	  </CreateItem>
+
+	  <CreateProperty Value="%(MSBuildProjectParentDirectory.Fullpath)">
+		<Output PropertyName="SrcFolder" TaskParameter="Value"/>
+	  </CreateProperty>
+		
+		<Message Text="BinFolder: $(OutDir)"/>
+		<Message Text="SolutionFolder: $(MSBuildProjectDirectory)"/>
+        <Message Text="SrcFolder: $(SrcFolder)"/>
+		
+ 		<Exec Command="gitlink &quot;$(SrcFolder.TrimEnd('\'))&quot; -u http://srv-tfs-1:8080/tfs/GeoComm/_git/Core -f &quot;$(MSBuildProjectDirectory)\$(SolutionName).sln&quot; -d &quot;$(OutDir.TrimEnd('\'))&quot;" ></Exec>
+		
+		<Message Text="GitLink completed.  Exit code is [$(ErrorCode)]; $([System.DateTime]::Now.ToLongTimeString())" />
+	</Target>
+	
+  <Target Name="Nuget_Pack" DependsOnTargets="Build;GitLink" Condition="'$(NuspecFiles)' != ''">
+    <Message Text="Starting Nuget_Pack; $([System.DateTime]::Now.ToLongTimeString())" />
+    <!-- This requires MSBuildTasks package: https://www.nuget.org/packages/MSBuildTasks/ as part of the project-->
+    <!-- Only download a new copy of nuget.exe if we don't have a copy available -->
+    <!--<WebDownload Condition="!Exists('nuget.exe')" Filename="nuget.exe" FileUri="https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" />-->
+
+    <ItemGroup>
+      <NuspecFilePaths Include="$(NuspecFiles.Split(';'))" />
+    </ItemGroup>  
+    
+    <!-- Make nuget drop folder if it doesn't exist -->
+    <MakeDir Directories="$(NugetDropFolder)" Condition="!Exists('$(NugetDropFolder)')"/>
+    
+    <Exec Command="nuget pack &quot;%(NuspecFilePaths.Identity)&quot; -OutputDirectory &quot;$(NugetDropFolder)&quot; -Prop &quot;buildFolder=$(OutDir.TrimEnd('\'))&quot;">
+      <Output TaskParameter="ExitCode" PropertyName="ErrorCode"/>
+    </Exec>
+
+    <Message Text="Nuget_Pack completed.  Exit code is [$(ErrorCode)]; $([System.DateTime]::Now.ToLongTimeString())" />
+  </Target>
+
+  <!-- Push all packages in the Nuget Package Folder to the nuget server -->
+  <Target Name="Nuget_Push" DependsOnTargets="Nuget_Pack">
+    <Message Text="Starting Nuget_Push; $([System.DateTime]::Now.ToLongTimeString())" />
+
+    <ItemGroup>
+      <NugetPackages Include="$(NugetDropFolder.TrimEnd('\'))\*" />
+    </ItemGroup>
+    
+    <Exec Command="nuget push &quot;%(NugetPackages.Identity)&quot; -Source &quot;$(NugetServerUri)&quot; -ApiKey &quot;$(NugetServerAPIKey)&quot;" ></Exec>
+
+    <Message Text="Nuget_Push completed.  Exit code is [$(ErrorCode)]; $([System.DateTime]::Now.ToLongTimeString())" />
+  </Target>
+
+</Project>
+
